@@ -1,0 +1,6 @@
+@Tecnimotors.Reclamos.WebApi_HostAddress = http://localhost:5263
+
+GET {{Tecnimotors.Reclamos.WebApi_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
