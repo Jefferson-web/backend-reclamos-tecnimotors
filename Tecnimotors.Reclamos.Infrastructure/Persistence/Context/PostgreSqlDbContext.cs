@@ -15,6 +15,7 @@ namespace Tecnimotors.Reclamos.Infrastructure.Persistence.Context
         private IDbConnection _connection;
         private IDbTransaction _transaction;
         private bool _disposed;
+        private readonly object _lock = new object();
 
         public PostgreSqlDbContext(IConfiguration configuration)
         {
@@ -24,44 +25,48 @@ namespace Tecnimotors.Reclamos.Infrastructure.Persistence.Context
 
         public IDbConnection Connection
         {
-            get 
+            get
             {
-                if (_connection == null)
-                {
-                    _connection = new NpgsqlConnection(_connectionString);
-                    _connection.Open();
-                }
-                else if (_connection.State != ConnectionState.Open)
-                {
-                    _connection.Open();
-                }
+                ThrowIfDisposed();
 
-                return _connection;
+                lock (_lock)
+                {
+                    if (_connection == null)
+                    {
+                        _connection = new NpgsqlConnection(_connectionString);
+                        _connection.Open();
+                    }
+                    else if (_connection.State != ConnectionState.Open)
+                    {
+                        _connection.Open();
+                    }
+                    return _connection;
+                }
             }
         }
 
         public IDbTransaction Transaction => _transaction;
 
-        public bool HasActiveTransaction => _transaction != null;
+        public bool HasActiveTransaction => _transaction != null && !_disposed;
 
         public async Task<IDbTransaction> BeginTransactionAsync()
         {
+            ThrowIfDisposed();
+
             if (_transaction != null)
             {
                 return _transaction;
             }
 
-            if (ConnectionState.Open != Connection.State)
-            {
-                await Task.Run(() => Connection.Open());
-            }
-
-            _transaction = Connection.BeginTransaction();
+            var connection = Connection; // Esto asegura que la conexión esté abierta
+            _transaction = await Task.Run(() => connection.BeginTransaction());
             return _transaction;
         }
 
         public async Task CommitTransactionAsync()
         {
+            ThrowIfDisposed();
+
             try
             {
                 if (_transaction == null)
@@ -75,14 +80,68 @@ namespace Tecnimotors.Reclamos.Infrastructure.Persistence.Context
             {
                 await RollbackTransactionAsync();
                 throw;
-            } 
+            }
             finally
+            {
+                CleanupTransaction();
+            }
+        }
+
+        public async Task RollbackTransactionAsync()
+        {
+            if (_disposed) return; // Si ya está disposed, no hacer nada
+
+            try
             {
                 if (_transaction != null)
                 {
+                    await Task.Run(() =>
+                    {
+                        try
+                        {
+                            _transaction.Rollback();
+                        }
+                        catch (ObjectDisposedException)
+                        {
+                            // La transacción ya fue disposed, ignorar
+                        }
+                        catch (InvalidOperationException)
+                        {
+                            // La transacción no está en un estado válido, ignorar
+                        }
+                    });
+                }
+            }
+            finally
+            {
+                CleanupTransaction();
+            }
+        }
+
+        private void CleanupTransaction()
+        {
+            if (_transaction != null)
+            {
+                try
+                {
                     _transaction.Dispose();
+                }
+                catch (ObjectDisposedException)
+                {
+                    // Ya fue disposed, ignorar
+                }
+                finally
+                {
                     _transaction = null;
                 }
+            }
+        }
+
+        private void ThrowIfDisposed()
+        {
+            if (_disposed)
+            {
+                throw new ObjectDisposedException(nameof(PostgreSqlDbContext));
             }
         }
 
@@ -98,32 +157,51 @@ namespace Tecnimotors.Reclamos.Infrastructure.Persistence.Context
             {
                 if (disposing)
                 {
-                    _transaction?.Dispose();
-                    _connection?.Dispose();
-                    _transaction = null;
-                    _connection = null;
+                    lock (_lock)
+                    {
+                        // Limpiar transacción primero
+                        try
+                        {
+                            if (_transaction != null)
+                            {
+                                try
+                                {
+                                    _transaction.Rollback();
+                                }
+                                catch (ObjectDisposedException) { }
+                                catch (InvalidOperationException) { }
+                                finally
+                                {
+                                    _transaction.Dispose();
+                                    _transaction = null;
+                                }
+                            }
+                        }
+                        catch (ObjectDisposedException) { }
+
+                        // Limpiar conexión
+                        try
+                        {
+                            if (_connection != null)
+                            {
+                                if (_connection.State == ConnectionState.Open)
+                                {
+                                    _connection.Close();
+                                }
+                                _connection.Dispose();
+                                _connection = null;
+                            }
+                        }
+                        catch (ObjectDisposedException) { }
+                    }
                 }
                 _disposed = true;
             }
         }
 
-        public async Task RollbackTransactionAsync()
+        ~PostgreSqlDbContext()
         {
-            try
-            {
-                if (_transaction != null)
-                {
-                    await Task.Run(() => _transaction.Rollback());
-                }
-            }
-            finally
-            {
-                if (_transaction != null)
-                {
-                    _transaction.Dispose();
-                    _transaction = null;
-                }
-            }
+            Dispose(false);
         }
     }
 }

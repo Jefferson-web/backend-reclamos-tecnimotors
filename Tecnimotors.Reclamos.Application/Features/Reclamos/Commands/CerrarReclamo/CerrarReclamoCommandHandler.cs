@@ -60,9 +60,9 @@ namespace Tecnimotors.Reclamos.Application.Features.Reclamos.Commands.CerrarRecl
 
             await _historialEstadoRepository.CreateAsync(historial);
 
-            _ = _mediator.Publish(new ReclamoCerradoEvent(reclamo.TicketId), cancellationToken);
+            await _mediator.Publish(new ReclamoCerradoEvent(reclamo.TicketId), cancellationToken);
 
-            _ = _mediator.Publish(new EnviarEncuestaEvent(reclamo.TicketId), cancellationToken);
+            await _mediator.Publish(new EnviarEncuestaEvent(reclamo.TicketId), cancellationToken);
 
             return true;
         }
